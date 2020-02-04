@@ -1,0 +1,935 @@
+---
+title: "Homework 2"
+author: 'Carson Keeter, Graduate Student: Statistics'
+date: "11/12/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Question 1: Colorado Precipitation 
+
+#### 1a) Provide an R function that computes the log-likelihood of a spatial model.
+
+The following scatterplot is used to investigate if there is a relationship between *precipitation* and *elevation*: 
+
+```{r, eval = TRUE, fig.align='center'}
+
+ggplot(
+  data = colo,
+  aes(
+    x = Elevation,
+    y = Precip
+  )
+) + 
+  geom_point(
+    
+  ) + 
+  geom_smooth(
+    method = "lm"
+  ) + 
+  theme_classic(
+    
+  ) + 
+  labs(
+    title = "Colorado Precipitation",
+    x = "Elevation (meters)",
+    y = "Precipitation (mm)"
+  )
+
+```
+
+Disregarding any spatial effects, it seems that elevation and precipitation are positively correlated. Now, recall that the Colorado precip/temp data contained fairly clear evidence that there is spatial correlation with the predictor variables (presumably in the Rocky Mountain Range). Thankfully, we are able to determine the likelihood of a spatial model. 
+
+To "hand" calculate the log-likelihood of a spatial model, a few matrices must be constructed: 
+$$Y(s) = X'(s)\beta + \omega(s) + \epsilon(s)$$
+Where $w(s)$ contains variance-covariance matrix (NxN),
+
+$$w(s) \sim MVN(0, \Sigma(\theta)) $$
+and 
+
+$$\Sigma(\theta) = \alpha^2[spatial\, correlation\, matrix]$$
+
+and 
+
+$$\epsilon(s) \sim MVN(0, \tau^2[nonspatial\, correlation\, matrix]) $$
+Where, 
+
+* $Y(s)$: Matrix of the outcome variable (logPrecip)
+
+* $X(s)$: Scaled matrix of the predictor variables (Zelevation) centered at -0.02985014. 
+
+* $H^*$: Distance matrix of the coordinates from the Colorado precipitation dataset.
+
+* $\theta$: Contains parameters of the spatial correlation function (usually effective range)
+
+* More on this later 
+
+```{r, eval = FALSE}
+
+H <- as.matrix(
+  dist(
+    st_coordinates(
+      colo_sf
+    )
+  )
+)
+
+X <- model.matrix(
+  ~ scale(Zelevation),
+  data = colo_sf
+)
+
+Y <- as.matrix(
+  colo_sf$logPrecip
+)
+```
+
+Once these matrices are constructed, the function to determine the log-likelihood of a *Powered Exponential spatial correlation function* is constructed. The *Powered Exponential spatial correlation function* is the following: 
+
+$$ Cor(Y(s_i), Y(s_j)) = Cor(h_{ij} = ||s_i - s_j||) = exp(-(\phi h_{ij})^p)) $$
+
+The following code replicates the *Powered Exponential spatial correlation function*: 
+```{r, eval = TRUE}
+MVN_fun <- function(theta, H, X, Y){
+  
+  part_sill <- theta[1]
+  phi <- theta[2]
+  p <- theta[3]
+  nugget <- theta[4]
+  
+  Sigma <- part_sill*exp(-(phi*H)^p) + nugget*diag(length(Y))
+  
+  Sigma_inverse <- solve(Sigma)
+  
+  Beta <- solve(t(X) %*% Sigma_inverse %*% X) %*% t(X) %*% Sigma_inverse %*% Y 
+  
+  log_L <- mvtnorm::dmvnorm(
+    x = t(Y),
+    mean = X %*% Beta,
+    sigma = Sigma,
+    log = TRUE
+    )
+  
+  return(-1*log_L)
+  
+}
+
+```
+
+#### 1b) Use *optim()* to maximize the log-likelihood using the function you wrote in part a) and provide: i) the maximum log-likelihood value; and ii) the maximum likelihood estimates of the 4 parameters.
+
+Using the function from above and *optim()*, we can now estimate the log-likelihood of the *Powered Exponential spatial correlation function*. The starting values (partial sill and the nugget) are all estimated from the following variogram: 
+
+```{r, eval = TRUE, fig.align='center'}
+variogram <- variogram(
+  logPrecip ~ 1, 
+  locations = ~Longitude + Latitude,
+  data = colo,
+  cutoff = cutoff,
+  width = cutoff/bins
+)
+
+plot(
+  variogram,
+  cex = 2, 
+  pch = 19,  
+  ylab = expression(
+    paste(
+      "Average", (0.7*(Y(s[i]) - Y(s[j])^2))
+    )
+  ),
+  xlab = "Euclidean Distance (km)"
+)
+```
+
+Here, it can be estimated that the nugget and partial sill are approx. 0.10. Then, the starting values for $\phi$ and *p* are reasonably estimated. 
+
+The following code uses the function created above and estimates the log-likelihood of a *Powered Exponential correlation function*: 
+
+```{r, eval = FALSE}
+MLE <- optim(
+  c(0.1, 1, 0.5, 0.1),
+  fn = MVN_fun,
+  H = H,
+  X = X,
+  Y = Y,
+  hessian = TRUE
+  )
+```
+```{r, eval = TRUE}
+MLE
+```
+
+Here, the following parameters are estimated from this function: 
+
+* Log-likelihood: 1.067
+* Partial Sill: 0.2218
+* p: 0.9152
+* $\phi$: 0.6244 
+* Nugget: 0.0055
+
+#### 1c) Estimate an identical model using geoR. Please provide all relevant code and output. 
+
+Now, the same estimates are made with a real R package. Using *geoR*, we are able to create and estimate the log-likelihood of a *Powered Exponential correlation function* with the following: 
+
+```{r, eval = FALSE}
+
+d <- data.frame(
+  st_coordinates(
+    colo_sf
+  ),
+  colo[, -1:-2]
+)
+
+d_geo <- as.geodata(
+  d,
+  coords.col = 1:2,
+  data.col = 4,
+  covar.col = 6
+)
+
+fit_geoR <- geoR::likfit(
+  d_geo,
+  ini.cov.pars = c(0.2, 1),
+  nugget = .1,
+  fix.nugget = FALSE,
+  trend = ~ scale(Zelevation),
+  cov.model = "powered.exponential",
+  kappa = 1,
+  fix.kappa = FALSE,
+  lik.method = "ML"
+)
+```
+```{r, eval = TRUE}
+summary(fit_geoR)
+```
+
+Here, we see the following estimates: 
+
+* Log-likelihood: -1.067
+* Partial Sill: 0.2219
+* p: 0.9153
+* $\phi$: 1/1.602 = 0.6242
+* Nugget: 0.0055
+
+It is important to note that the *anisotropy* parameters are all consistent with an *isotropic* model (confirming that I did not mix up the code). 
+
+#### 1d)  Demonstrate that the estimates you obtained in part b) match the estimates out of geoR for the 4 parameters. Note that these must match to at least the second decimal point. Hint: recall that geoR parameterizes its spatial correlation functions in terms of 1/𝜙 and not in terms of 𝜙.
+
+The following table compares the values from the hand calculated log-likelihood model and the geoR model: 
+
+```{r, eval = TRUE}
+q1_model_comp <- data.frame(
+  model = c("By Hand", "geoR"),
+  log.likelihood = c(MLE$value, fit_geoR$loglik),
+  nugget = c(MLE$par[4], fit_geoR$nugget),
+  partial.sill = c(MLE$par[1], fit_geoR$sigmasq),
+  range.parm = c(MLE$par[2], 1/fit_geoR$phi),           # Notice 1/phi for phi in geoR
+  power = c(MLE$par[3], fit_geoR$kappa)
+  )
+
+q1_model_comp
+
+```
+
+As per the requirements for this question, the estimates are identical to (at least) the second decimal. 
+
+#### 1e) Derive the mathematical expression for the effective range of the powered exponential.
+
+First, $\lambda$ is assumed to be a arbitrarily small correlation (usually around 0.05). For now, it will be kept in general terms. 
+
+Then, the correlation is state in terms of $\phi$ (range parameter), *h* (effective range), *p* (exponent), and $\lambda$ (spatial correlation). 
+
+$$ \lambda = exp(-\phi h^*)^p $$
+<center>
+**To find *h* **
+</center> 
+
+Take the *log* of both sides, 
+
+$$ log(\lambda) = -(\phi h^*)^p $$ 
+Divide by -1, 
+$$ -log(\lambda) = (\phi h^*)^p $$ 
+Divide by $\phi$,
+$$ \frac{-log(\lambda)}{\phi} = (h^*)^p $$ 
+
+Raise each side to the power of *1/p*, 
+$$ \left(\frac{-log(\lambda)}{\phi}\right)^\frac{1}{p} = h^* $$ 
+
+
+### Question 2: Fukushima Daiichi Nuclear Power Plant Disaster 
+
+#### 2a) Using a non-spatial model, decide how to specify the mean function. Be sure to explore linear and/or quadratic distance variables and possible interactions with rain. You don’t have to provide every model you considered, but label/describe your final answer and describe how you arrived there. 
+
+After much model selection, I believe that *log(Dose)* as a function of *Distance (km)* and *Distance^2^ (km)* is the most appropriate in this scenario. The residuals for this model meet the requirements of linear regression fairly well and the overall model is fairly interpretable. It also turns out that *rain* is insignificant when considered with the aforementioned variables. The OLS regression equation, $log(Dose) = 0.8296 - 0.1348distance + 0.0032distance^2 + \epsilon(s)$, is constructed from the following: 
+
+```{r, eval = TRUE}
+
+model <- lm(
+  log_Dose ~ Dist_km + Dist_km_sq,
+  data = rad_df
+)
+
+summary.lm(model)
+```
+
+#### 2b/c) Make a choropleth map of the residuals from the non-spatial model you decided on in part a). Please provide the coast of Japan as a reference. Make sensible choices to make your map as readable as possible. Comment on whether you observe spatial correlation in the residuals. Investigate the residuals for evidence of anisotropy. Provide the apparent anisotropy angle. 
+
+```{r, eval = TRUE, message = FALSE, warning = FALSE, fig.align='center'}
+max_lon <- max(rad_df$LONG)
+min_lon <- min(rad_df$LONG)
+
+max_lat <- max(rad_df$LAT)
+min_lat <- min(rad_df$LAT)
+
+correction <- .12
+
+tm_shape(
+  japan_fill,
+  proj4string = CRS(
+    "+proj=utm +zone=54"
+  ),
+  ylim = c(
+    min_lat - correction, 
+    max_lat + correction
+  ),
+  xlim = c(
+    min_lon - correction, 
+    max_lon + correction
+    )
+  ) + 
+  tm_fill(
+    col = "lightgreen"
+  ) + 
+  tm_borders(
+    lwd = 2,
+    col = "black"
+  ) + 
+  tm_shape(
+    rad_df_points
+  ) +
+  tm_symbols(
+    col = "resid",
+    palette = "-Spectral",
+    n = 7,
+    style = "jenks",
+    border.lwd = 0.1,
+    border.col = 'gray',
+    alpha = 0.9,
+    scale = .75,
+    title.col = "Residuals"
+  ) + 
+  tm_shape(
+    japan_cities
+  ) + 
+  tm_text(
+    "name",
+    textNA = "",
+    remove.overlap = T,
+    shadow = T
+  ) +
+  tm_legend(
+    position = c(
+      "left", 
+      "bottom"
+    ),
+    legend.outside = TRUE,
+    frame = F,
+    main.title = 'Nonspatial Residuals (OLS)'
+  ) +
+  tm_layout(
+    bg.color = "skyblue",
+    saturation = .85
+  ) + 
+  tm_compass(
+    north = 0,
+    type = "arrow"
+  ) 
+```
+
+
+Based on this map, there seems to be some *surprisingly* evident spatial correlation along the NW direction. Since the residuals are positive along this direction, the fitted values are underestimated. Furthermore, it is apparent that there is spatial correlation around the 125$^\circ$ diagonal (where 0$^\circ$ is completely horizontal and 90$^\circ$ is completely vertical moving counter-clockwise). 
+
+
+#### 2d) Using sensible notation, write out all parts of a likelihood-based anisotropic spatial model. Be sure to specify the following: i) likelihood of observed data; ii) specification of the mean function; iii) specification of the variance-covariance matrix. Your notation can be specific to this exact dataset, or general for any spatial dataset.
+
+The function for the likelihood of an anisotropic model is the following: $$ Y(s) \sim MVN(X(s)\beta,\, \alpha^2\rho(H^*, \theta)_{ij} + \tau^2I) $$
+
+Where, 
+
+* $Y(s)$: Outcome variable, log(dose), distributed in a *multi-variate normal* distribution (MVN)
+
+* $X(s)$: Design matrix of predictor variables, distance (km) and distance^2^ (km), scaled by matrix coefficients, $\beta$  
+
+* $\alpha$ ^2^: Spatial variance, partial sill
+
+* $\rho(H^*, \theta)_{ij}$: $\rho(h^*_{ij} = ||G(s_i - s_j)||, \theta)$ estimated by $\frac{n(n-1)}{2}$, with 
+$$
+G =
+\begin{pmatrix}
+1 & 0\\
+0 & \lambda
+\end{pmatrix}
+\begin{pmatrix}
+cos(\theta) & sin(\theta)\\ 
+-sin(\theta) & cos(\theta)
+\end{pmatrix} 
+$$
+
+* $\tau$^2^: Non-spatial variance, nugget
+
+* $I$: Identity matrix where, 
+$$
+I =
+\begin{pmatrix}
+1 & 0 & \dots & 0\\
+0 & 1 & \ddots & 0\\
+\vdots & \ddots & \ddots & \vdots\\
+0 & 0 & 0 & 1
+\end{pmatrix}
+$$
+
+
+#### 2e) Estimate: i) isotropic *and* ii) anisotropic likelihood-based models for these data. Make sensible decisions regarding the spatial correlation function. Compare these two models to each other and also to the non-spatial model using information criteria. Which of the three models is best for predicting radiation dose-rates?
+
+So far, only a non-spatial model has been constructed (OLS). Now, two models are constructed: one that considers both distance *and* orientation/direction (anisotropic) and one that only consideres distance (isotropic). 
+
+First, the model that only considers distance is created (isotropic): 
+
+```{r, eval = FALSE}
+rad_geostat_iso <- lgm(
+  log_Dose ~ Dist_km + Dist_km_sq,
+  data = rad_sp,
+  grid = 500,
+  shape = 0.5,
+  fixShape = TRUE,
+  fixNugget = FALSE,
+  aniso = FALSE,
+  reml = TRUE
+)
+```
+
+```{r, eval = TRUE}
+summary(rad_geostat_iso)
+```
+
+The output is clunky but packed with information. Fist, it is important to note (again) that the anisotropy measures are the opposite of anisotropic. The "shape" of the function is *exponential* with a 0$^\circ$ angle. We also see that the data become independent around 0.616 kilometers (*effective range*). We also see the relevant estimates for the beta coefficients and the respective p-values. Unlike OLS regression, these beta coefficients are not as useful in this spatial context.  
+
+However, this model assumes that there is no directionality in the correlation. The following model does: 
+
+```{r, eval = FALSE}
+rad_fit_aniso <- lgm(
+  log_Dose ~ Dist_km + Dist_km_sq,      
+  data = rad_sp,                
+  grid = 500,                    
+  shape = 0.5,
+  fixShape = FALSE,   
+  nugget = 0.05,
+  fixNugget = FALSE,  
+  aniso = TRUE,
+  reml = TRUE
+  ) 
+```
+
+```{r, eval = TRUE}
+summary(rad_fit_aniso)
+```
+
+We see similar values as the isotropic model. However, the shape and anisotropic parameters are considered and estimated. The "anisoAngleDegrees" estimates the minor axis of the spatial correlation in degrees. The major axis, intuitively, is calculated by adding 90$^\circ$ to the the minor axis estimate. The angle and ratio will be discussed in part g. 
+
+The table below compares the three models (OLS, anisotropic, and isotropic) based on their Akaike Information Criterion (AIC) and Bayesian Information Criterion (BIC). These tests effectively estimate the out-of-sample prediction error and overall reliability. In short, the comparatively smaller the number, the better. 
+
+```{r, eval = TRUE}
+model_comp <- data.frame(
+  model = c("OLS", "Anisotropic", "Isotropic"),
+  AIC = c(AIC(model), AIC(rad_fit_aniso),AIC(rad_geostat_iso)),
+  BIC = c(BIC(model), BIC(rad_fit_aniso), BIC(rad_geostat_iso))
+  )
+
+model_comp
+```
+
+*Unsurprisingly*, the model that accounts for the most information (spatial effects, distance, *and* orientation) is the best based on AIC and BIC. 
+
+#### 2f) Compare radiation dose-rate predictions for the anisotropic vs. isotropic model using a 4-panel figure. Plot the two (2) dose-rate prediction surfaces and two (2) prediction standard deviation surfaces. Add anything to the map you think will help with its readability. Comment on how the predictions differ between the two models.
+
+The following 4-panel figure shows the predicted values for log(Dose) and standard deviations for both spatial models:  
+```{r, eval = TRUE, echo = FALSE, fig.align='center'}
+reactor <- c(141.0298, 37.4245)
+
+par(mfcol=c(2,2), mai=c(0.5,0.5,0.5,0.5))
+
+plot(rad_fit_aniso$predict[["predict"]],main='Anisotropic Predicted log(Dose)');points(reactor[1],reactor[2],pch="R");plot(rad_geostat_iso$predict[["predict"]],main='Isotropic Predicted log(Dose)');points(reactor[1],reactor[2],pch="R");
+plot(rad_fit_aniso$predict[["krigeSd"]],main='Anisotropic Prediction SDs');points(reactor[1],reactor[2],pch="R");plot(rad_geostat_iso$predict[["krigeSd"]],main='Isotropic Prediction SDs'); points(reactor[1],reactor[2],pch="R")
+```
+
+As one can see in the "Prediction SD" plots, the isotropic model fits perfectly round circles while the anisotropic model fits ellipse rotated to the same extent as listed in the anisotropic degree (~126$^\circ$). Furthermore, the anisotropic model fits the predicted values for log(Dose) more tightly while the isotropic model fits the values more loosely. 
+
+#### 2g) Examine the anisotropy parameters (ratio and angle) from your anisotropic model. Comment on how this aligns with what you found for part c). 
+
+Based on this anisotropic model, the angle in the *minor axis* is 35.89$^\circ$ which translates to approx. 125.89$^\circ$ in the major axis (90$^\circ$ + 35.89$^\circ$). This confirms the visual inspection done in the previous plot (in residuals from part b, part c, and part f). 
+
+The anisotropic ratio estimates the amount of stretch occuring within the data and is a function of the range parameter and anisotropic angle.  
+
+#### 2h) Comment briefly on what the latent spatial effects may be measuring in your model. 
+
+I would imagine that wind direction should have some influence on spread of radiation, since wind had such a major effect during similar disasters. Additionally, the dose of radiation experienced may be some function of proximity to water reservoir (since radiation can be spread via drinking water). Looking at pictures of Namie, Japan (located in the Fukushima Prefecture), it seems that there are areas with higher terrain. It would make sense that these areas would be more exposed to radiation, especially if the slope faces that of the reactors.  
+
+---
+### Full Code 
+```{r, eval = FALSE}
+setwd("H:/Desktop/Spatial/Homework 2")    # Work 
+setwd("C:/Users/keete/Documents/Fall 2019/Spatial Stats/Homework 2")   # Not work 
+### Homework 3 
+
+# Libraries 
+
+library(geoR)
+library(tidyverse)
+library(readxl)
+library(sf)
+library(sp)
+library(mvtnorm)
+library(gstat)
+library(ggfortify)
+library(maps)
+library(maptools)
+library(sf)
+library(tmap)
+library(tmaptools)
+library(geostatsp)
+library(RColorBrewer)
+
+
+# Question 1 
+
+# Prelim 
+
+colo <- read_excel("co_precip.xls")             # Read in 
+
+ggplot(
+  data = colo,
+  aes(
+    x = Elevation,
+    y = Precip
+  )
+) + 
+  geom_point(
+    
+  ) + 
+  geom_smooth(
+    method = "lm"
+  ) + 
+  theme_classic(
+    
+  )
+
+summary(colo)
+
+colo_sf <- st_as_sf(
+  colo,
+  coords = c("Longitude", "Latitude"),
+  crs = CRS("+proj=utm +zone=13")
+)
+
+head(colo_sf)
+
+# Variogram for Nuggest estimation 
+
+cutoff <- .7*max(
+  dist(
+    cbind(
+      colo$Longitude,
+      colo$Latitude
+    )
+  )
+)
+
+bins <- 10
+
+variogram <- variogram(
+  logPrecip ~ 1, 
+  locations = ~Longitude + Latitude,
+  data = colo,
+  cutoff = cutoff,
+  width = cutoff/bins
+)
+
+plot(
+  variogram,
+  cex = 2, 
+  pch = 19,  
+  ylab = expression(
+    paste(
+      "Average", (0.7*(Y(s[i]) - Y(s[j])^2))
+    )
+  ),
+  xlab = "Euclidean Distance (km)"
+)
+# Maximum likelihood by hand 
+
+H <- as.matrix(
+  dist(
+    st_coordinates(
+      colo_sf
+    )
+  )
+)
+
+X <- model.matrix(
+  ~ scale(Zelevation),
+  data = colo_sf
+)
+
+Y <- as.matrix(
+  colo_sf$logPrecip
+)
+
+MVN_fun <- function(theta, H, X, Y){
+  
+  part_sill <- theta[1]
+  phi <- theta[2]
+  p <- theta[3]
+  nugget <- theta[4]
+  
+  Sigma <- part_sill*exp(-(phi*H)^p) + nugget*diag(length(Y))
+  
+  Sigma_inverse <- solve(Sigma)
+  
+  Beta <- solve(t(X) %*% Sigma_inverse %*% X) %*% t(X) %*% Sigma_inverse %*% Y 
+  
+  log_L <- mvtnorm::dmvnorm(
+    x = t(Y),
+    mean = X %*% Beta,
+    sigma = Sigma,
+    log = TRUE
+    )
+  
+  return(-1*log_L)
+  
+}
+
+
+MLE <- optim(
+  c(0.1, 1, 0.5, 0.1),
+  fn = MVN_fun,
+  H = H,
+  X = X,
+  Y = Y,
+  hessian = TRUE
+  )
+
+MLE
+
+# Maximum likelihood by geoR
+
+d <- data.frame(
+  st_coordinates(
+    colo_sf
+  ),
+  colo[, -1:-2]
+)
+
+d_geo <- as.geodata(
+  d,
+  coords.col = 1:2,
+  data.col = 4,
+  covar.col = 6
+)
+
+fit_geoR <- geoR::likfit(
+  d_geo,
+  ini.cov.pars = c(0.09, 1),
+  nugget = .1,
+  fix.nugget = FALSE,
+  trend = ~ scale(Zelevation),
+  cov.model = "powered.exponential",
+  kappa = 1,
+  fix.kappa = FALSE,
+  lik.method = "ML"
+)
+
+fit_geoR
+
+summary(fit_geoR)
+
+MLE
+
+q1_model_comp <- data.frame(
+  model = c("By Hand", "geoR"),
+  log.likelihood = c(MLE$value, fit_geoR$loglik),
+  nugget = c(MLE$par[4], fit_geoR$nugget),
+  partial.sill = c(MLE$par[1], fit_geoR$sigmasq),
+  range_parm = c(MLE$par[2], 1/fit_geoR$phi),
+  power = c(MLE$par[3], fit_geoR$kappa)
+  )
+######### Question 2
+
+rad_df <- read_excel("Fukushima_30km_2016.xlsx")
+
+# Splorin' 
+
+summary(rad_df)
+
+rad_df <- rad_df %>%                 # Change Rain to 0/1
+  mutate(
+    Rain_code = ifelse(
+      test = Rain == "Rain",
+      yes = 1,
+      no = 0
+      ),
+    interaction = Dist_km*Rain_code
+    )
+
+
+model <- lm(
+  log_Dose ~ Dist_km + Dist_km_sq,
+  data = rad_df
+)
+
+summary.lm(model)
+
+autoplot(
+  model,
+  smooth.colour = NA
+) + 
+  theme_classic(
+    
+  )
+
+rad_df <- rad_df %>% 
+  mutate(resid = resid(model))
+
+rad_df_points <- st_as_sf(
+  x = rad_df,
+  coords = c(
+    "LONG",
+    "LAT"
+  ),
+  crs = CRS(
+    "+proj=utm +zone=54"
+  )
+)
+
+data(world.cities)
+data(World, metro, rivers, land)
+
+world.cities <- world.cities %>% 
+  filter(
+    country.etc == "Japan"
+    )
+
+japan_cities <- st_as_sf(
+  x = world.cities,
+  coords = c(
+    "long",
+    "lat"
+  ),
+  crs = CRS(
+    "+proj=utm +zone=54"
+  )
+)
+
+summary(japan_cities)
+summary(rad_df_points) 
+
+japan_map <- map(
+  database = "world",
+  region = "Japan",
+  plot = F,
+  fill = T
+)
+  
+summary(japan_map)
+
+japan_fill <- map2SpatialPolygons(
+  japan_map,
+  IDs = japan_map$names,
+  proj4string = CRS(
+    "+proj=utm +zone=54"
+  ) 
+)
+
+ 
+max_lon <- max(rad_df$LONG)
+min_lon <- min(rad_df$LONG)
+
+max_lat <- max(rad_df$LAT)
+min_lat <- min(rad_df$LAT)
+
+correction <- .12
+
+tm_shape(
+  japan_fill,
+  proj4string = CRS(
+    "+proj=utm +zone=54"
+  ),
+  ylim = c(
+    min_lat - correction, 
+    max_lat + correction
+  ),
+  xlim = c(
+    min_lon - correction, 
+    max_lon + correction
+    )
+  ) + 
+  tm_fill(
+    col = "lightgreen"
+  ) + 
+  tm_borders(
+    lwd = 2,
+    col = "black"
+  ) + 
+  tm_shape(
+    rad_df_points
+  ) +
+  tm_symbols(
+    col = "resid",
+    palette = "-Spectral",
+    n = 7,
+    style = "jenks",
+    border.lwd = 0.1,
+    border.col = 'gray',
+    alpha = 0.9,
+    scale = .75,
+    title.col = "Residuals"
+  ) + 
+  tm_shape(
+    japan_cities
+  ) + 
+  tm_text(
+    "name",
+    textNA = "",
+    remove.overlap = T,
+    shadow = T
+  ) +
+  tm_legend(
+    position = c(
+      "left", 
+      "bottom"
+    ),
+    legend.outside = TRUE,
+    frame = F,
+    main.title = 'Nonspatial Residuals (OLS)'
+  ) +
+  tm_layout(
+    bg.color = "skyblue",
+    saturation = .85
+  ) + 
+  tm_compass(
+    north = 0,
+    type = "arrow"
+  ) 
+
+cutoff_rad <- .65*max(
+  dist(
+    cbind(
+      rad_df$LONG,
+      rad_df$LAT
+    )
+  )
+)
+
+bins_rad <- 10
+
+variogram <- variogram(
+  log_Dose ~ 1, 
+  locations = ~LONG + LAT,
+  data = rad_df,
+  cutoff = cutoff_rad,
+  width = cutoff_rad/bins_rad
+)
+
+plot(
+  variogram,
+  pch = 16, 
+  cex = 1.5
+  )
+
+######################### Isotropic Models 
+
+### geostatsp
+
+rad_d <- data.frame(
+  st_coordinates(
+    rad_df_points
+  ),
+  rad_df[, -1:-2]
+)
+
+rad_sp_iso  <- SpatialPointsDataFrame(
+  coords = rad_d[, 1:2],
+  data = rad_d,
+  proj4string = CRS(
+    "+proj=utm +zone=54"
+  )
+)
+
+rad_geostat_iso <- lgm(
+  log_Dose ~ Dist_km + Dist_km_sq,
+  data = rad_sp_iso,
+  grid = 500,
+  shape = 0.5,
+  fixShape = TRUE,
+  fixNugget = FALSE,
+  aniso = FALSE,
+  reml = TRUE
+)
+
+summary(rad_geostat_iso)
+
+################################### Anisotropic Models 
+
+# Geostatsp
+
+rad_fit_aniso <- lgm(
+  log_Dose ~ Dist_km + Dist_km_sq,      
+  data = rad_sp_iso,                
+  grid = 500,                    
+  shape = 0.5,
+  fixShape = FALSE,   
+  nugget = 0.05,
+  fixNugget = FALSE,  
+  aniso = TRUE,
+  reml = TRUE
+  ) 
+
+summary(rad_fit_aniso)
+
+
+# Plots 
+
+reactor <- c(141.0298, 37.4245)
+
+par(mfcol=c(2,2), mai=c(0.5,0.5,0.5,0.5))
+
+plot(rad_fit_aniso$predict[["krigeSd"]],main='Anisotropic Prediction SDs')
+points(reactor[1],reactor[2],pch="R")
+
+plot(rad_geostat_iso$predict[["krigeSd"]],main='Isotropic Prediction SDs')
+points(reactor[1],reactor[2],pch="R")
+
+plot(rad_fit_aniso$predict[["predict"]],main='Anisotropic Predicted log(Dose)')
+points(reactor[1],reactor[2],pch="R")
+
+plot(rad_geostat_iso$predict[["predict"]],main='Isotropic Predicted log(Dose)')
+points(reactor[1],reactor[2],pch="R")
+
+model_comp <- data.frame(
+  model = c("OLS", "Anisotropic", "Isotropic"),
+  AIC = c(AIC(model), AIC(rad_fit_aniso),AIC(rad_geostat_iso)),
+  BIC = c(BIC(model), BIC(rad_fit_aniso), BIC(rad_geostat_iso))
+  )
+
+model_comp
+
+```
+
+<center>
+
+![](meme.jpg)
+
+</center> 
